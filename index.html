@@ -72,6 +72,8 @@ ul.cols li:last-child{border-bottom:none}
 .badge{display:inline-block;font-size:.72rem;font-weight:700;padding:1px 6px;border-radius:3px;margin-left:4px}
 .pk{background:var(--brass);color:var(--surface)}
 .fk{border:1.5px solid var(--green);color:var(--green)}
+.vw{background:var(--green);color:var(--surface);vertical-align:2px}
+.viewcard{border-top:2px solid var(--green);margin-top:10px}
 .cdesc{grid-column:1 / -1;font-size:.82rem;color:var(--muted)}
 .formula{margin-top:20px;padding:12px 14px;background:var(--brass-soft);border-left:3px solid var(--brass);font-size:.88rem}
 .formula p{margin:0 0 6px}.formula p:last-child{margin:0}
@@ -158,7 +160,7 @@ footer{padding:18px 32px;border-top:1px solid var(--line);font-size:.82rem;color
 <div class="layout">
 <aside class="schema" aria-labelledby="schemaTitle">
   <h2 id="schemaTitle">Tables and keys</h2>
-  <p class="lede">Four tables, linked by keys. Click a table to preview it, or a column name to add it to your query.</p>
+  <p class="lede">Four tables, linked by keys, plus one view that joins them. Click a table to preview it, or a column name to add it to your query.</p>
 
   <svg class="map" viewBox="0 0 330 250" role="img" aria-labelledby="mapTitle mapDesc">
     <title id="mapTitle">How the tables connect</title>
@@ -193,7 +195,7 @@ footer{padding:18px 32px;border-top:1px solid var(--line);font-size:.82rem;color
 
 <main>
   <h2>Starter queries</h2>
-  <p class="lede">Run each one, then change it using the suggestion. They build in order, from one table to all four.</p>
+  <p class="lede">Run each one, then change it using the suggestion. They build in order, from one table to all four, then to the SalesDetail view.</p>
   <ul class="starters" id="starters"></ul>
   <div class="brief" id="brief" hidden></div>
 
@@ -484,7 +486,25 @@ CREATE TABLE OrderItems (
   ProductID   INTEGER NOT NULL REFERENCES Products(ProductID),
   Quantity    INTEGER NOT NULL,
   DiscountPct REAL NOT NULL DEFAULT 0
-);`;
+);
+CREATE VIEW SalesDetail AS
+SELECT oi.OrderItemID,
+       o.OrderID,
+       o.OrderDate,
+       strftime('%Y', o.OrderDate) AS OrderYear,
+       strftime('%Y', o.OrderDate) || '-Q' || ((CAST(strftime('%m', o.OrderDate) AS INTEGER) + 2) / 3) AS OrderQuarter,
+       strftime('%m', o.OrderDate) AS OrderMonth,
+       c.CustomerID, c.CustomerName, c.CustomerType, c.City, c.State, c.Region,
+       o.Channel,
+       p.ProductID, p.ProductName, p.Category,
+       oi.Quantity, p.UnitPrice, oi.DiscountPct,
+       oi.Quantity * p.UnitPrice * (1 - oi.DiscountPct / 100.0) AS Revenue,
+       oi.Quantity * p.UnitCost AS Cost,
+       oi.Quantity * p.UnitPrice * (1 - oi.DiscountPct / 100.0) - oi.Quantity * p.UnitCost AS GrossProfit
+FROM OrderItems oi
+JOIN Orders o    ON oi.OrderID = o.OrderID
+JOIN Customers c ON o.CustomerID = c.CustomerID
+JOIN Products p  ON oi.ProductID = p.ProductID;`;
 
 const TABLES = [
   {name:"Customers", key:"customers", desc:"Every business and web shopper that buys from Cimarron Bend.", cols:[
@@ -513,6 +533,18 @@ const TABLES = [
     ["ProductID","fk","Which product. Matches Products.ProductID."],
     ["Quantity","","How many units."],
     ["DiscountPct","","Discount off list price, in percent. 10 means 10% off."]]},
+  {name:"SalesDetail", key:"view", view:true, desc:"A view: a saved query that joins all four tables into one row per item sold, with revenue, cost and profit already worked out. Use it like a table. It stores no data of its own; it reads the four tables each time.", cols:[
+    ["OrderDate","","Date ordered."],
+    ["OrderYear","","2025 or 2026."],
+    ["OrderQuarter","","Year and quarter, such as 2026-Q1."],
+    ["OrderMonth","","01 through 12."],
+    ["CustomerName","",""],["CustomerType","","Cafe, Office or Retail."],
+    ["Region","",""],["State","",""],["Channel","","Wholesale or Web."],
+    ["ProductName","",""],["Category","",""],
+    ["Quantity","",""],["UnitPrice","",""],["DiscountPct","",""],
+    ["Revenue","","Dollars, after discount."],
+    ["Cost","","Dollars."],
+    ["GrossProfit","","Revenue minus cost, in dollars."]]},
 ];
 
 const REV = "oi.Quantity * p.UnitPrice * (1 - oi.DiscountPct / 100.0)";
@@ -591,6 +623,15 @@ JOIN Customers c ON o.CustomerID = c.CustomerID
 GROUP BY c.CustomerID
 ORDER BY Revenue DESC
 LIMIT 10;`},
+  {t:"Use the SalesDetail view",
+   what:"Answers a Starter 7 kind of question with no joins at all, because the SalesDetail view already did the joining and the math.",
+   tryit:"Change CustomerType to Category in both places. Then try OrderQuarter instead of OrderYear.",
+   sql:`SELECT CustomerType, OrderYear,
+       ROUND(SUM(Revenue), 2)     AS Revenue,
+       ROUND(SUM(GrossProfit), 2) AS GrossProfit
+FROM SalesDetail
+GROUP BY CustomerType, OrderYear
+ORDER BY CustomerType, OrderYear;`},
 ];
 
 let SQL, db, lastResult = null, history = [];
@@ -618,16 +659,16 @@ function count(t){ try { return db.exec(`SELECT COUNT(*) FROM ${t}`)[0].values[0
 function renderCards(){
   const box = $("#tcards"); box.innerHTML = "";
   TABLES.forEach(t => {
+    if (t.view) box.insertAdjacentHTML("beforeend", `<p class="tdesc" style="margin-top:10px"><span class="badge pk">PK</span> primary key: a value that is unique for every row. <span class="badge fk">FK</span> foreign key: a value that points to a row in another table.</p>`);
     const d = document.createElement("section");
-    d.className = "tcard"; d.id = "card-" + t.name;
-    d.innerHTML = `<div class="thead"><h3>${t.name}</h3><span class="rows">${count(t.name).toLocaleString()} rows</span></div>
+    d.className = "tcard" + (t.view ? " viewcard" : ""); d.id = "card-" + t.name;
+    d.innerHTML = `<div class="thead"><h3>${t.name}${t.view ? ' <span class="badge vw">VIEW</span>' : ""}</h3><span class="rows">${count(t.name).toLocaleString()} rows</span></div>
       <p class="tdesc">${t.desc} <button class="linkbtn" data-preview="${t.name}">Preview</button></p>
       <ul class="cols">${t.cols.map(([c,k,desc]) => `<li><button class="colname" data-col="${c}" title="Add ${c} to your query">${c}</button>
         <span class="badges">${k==="pk"?'<span class="badge pk" title="Primary key: unique for every row">PK</span>':""}${k==="fk"?'<span class="badge fk" title="Foreign key: points to a row in another table">FK</span>':""}</span>
-        ${desc?`<span class="cdesc">${desc}</span>`:""}</li>`).join("")}</ul>`;
+        ${desc?`<span class="cdesc">${desc}</span>`:""}</li>`).join("")}</ul>${t.view ? '<p class="tdesc">It also carries the ID columns (OrderItemID, OrderID, CustomerID, ProductID) and City.</p>' : ""}`;
     box.appendChild(d);
   });
-  box.insertAdjacentHTML("beforeend", `<p class="tdesc" style="margin-top:10px"><span class="badge pk">PK</span> primary key: a value that is unique for every row. <span class="badge fk">FK</span> foreign key: a value that points to a row in another table.</p>`);
 }
 
 function preview(t){
@@ -666,7 +707,7 @@ function setStarter(i){
 
 function friendly(msg){
   let m;
-  const names = TABLES.map(t => t.name).join(", ");
+  const names = TABLES.map(t => t.name).join(", ") + " (a view)";
   if ((m = msg.match(/no such table: (\S+)/i))) return `There's no table named "${m[1]}". The tables are ${names}. Check the spelling.`;
   if ((m = msg.match(/no such column: (\S+)/i))) return `There's no column named "${m[1]}" in the tables this query uses. Check the spelling, and check that the table holding that column is in your FROM or JOIN.`;
   if ((m = msg.match(/ambiguous column name: (\S+)/i))) return `"${m[1]}" is a column in more than one of your tables. Put the table name or nickname in front of it, such as o.${m[1].split(".").pop()}.`;
